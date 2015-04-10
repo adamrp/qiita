@@ -9,6 +9,9 @@ from datetime import date, timedelta, datetime
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
 from xml.sax.saxutils import escape
+from string import ascii_uppercase
+from random import choice, choice
+from warnings import warn
 
 from future.utils import viewitems
 from skbio.util import safe_md5
@@ -18,6 +21,11 @@ from qiita_core.qiita_settings import qiita_config
 from qiita_db.logger import LogEntry
 from qiita_db.ontology import Ontology
 from qiita_db.util import convert_to_id
+
+
+class EmptyFileWarning(Warning):
+    """Warning that is raised when an empty file is encountered"""
+    pass
 
 
 class InvalidMetadataError(Exception):
@@ -96,16 +104,46 @@ class EBISubmission(object):
         'metagenome', and 'mimarks-survey' are specially recognized and used to
         set other attributes in the submission, but any string is valid. This
         value is required only if `'Other'` is passed in `investigation_type`.
+    pmids : list of str, optional
+        List of PubMed IDs to include in the study XML
+    action : {'ADD', 'VALIDATE', 'UPDATE'}, optional
+        What action to take when communicating with EBI. Defaults to 'ADD'
+    what_to_update : {'study', 'experiment', 'sample', 'run'}, optional
+        If supplied, action must be VALIDATE or UPDATE. Specifies what is
+        being updated. Defaults to None.
+    random_seed : int, optional
+        If passed, this seed will be used for all random processes, including
+        update IDs. This is useful for testing, but should not be used
+        otherwise
+
+    Raises
+    ------
+    ValueError
+        If an invalid action is specified
+
+    Notes
+    -----
+    - Use kwargs to specify additional metadata to include in the study XML.
+      Additional metadata will be added using TAG and VALUE XML tags.
     """
     def __init__(self, preprocessed_data_id, study_title, study_abstract,
                  investigation_type, empty_value='no_data',
-                 new_investigation_type=None, pmids=None, **kwargs):
+                 new_investigation_type=None, pmids=None, action='ADD',
+                 what_to_update=None, random_seed=None, **kwargs):
+        if action not in ('ADD', 'VALIDATE', 'UPDATE'):
+            raise ValueError("action must be one of ADD, VALIDATE, or UPDATE")
+
+        # This should ONLY be used in testing
+        if random_seed is not None:
+            seed(random_seed)
+
         self.preprocessed_data_id = preprocessed_data_id
         self.study_title = study_title
         self.study_abstract = study_abstract
         self.investigation_type = investigation_type
         self.empty_value = empty_value
         self.new_investigation_type = new_investigation_type
+        self.what_to_update = what_to_update
         self.sequence_files = []
 
         self.study_xml_fp = None
@@ -114,6 +152,30 @@ class EBISubmission(object):
         self.run_xml_fp = None
         self.submission_xml_fp = None
         self.pmids = pmids if pmids is not None else []
+        self.action = action
+
+        # If doing an update, the items being updated need to have aliases
+        # that do not already exist in the system
+        if self.action in ('VALIDATE', 'UPDATE'):
+            if self.what_to_update is not None:
+                acceptable_update_set_values = {'study', 'experiment',
+                                                 'sample', 'run'}
+                if self.what_to_update not in acceptable_update_set_values:
+                    raise ValueError("Values in what_to_update must be in "
+                                     "%r" % acceptable_update_set_values)
+
+            self.update_ID = ''.join([choice(ascii_uppercase)
+                                      for _ in range(10)])
+            print ("Because this is a validate or update, new aliases will be "
+                   "suffixed with '_update_%s'" % self.update_ID)
+            LogEntry.create("New aliases for %s will be suffixed with "
+                            "'_update_%s'" % (self.preprocessed_data_id,
+                                       self.update_ID))
+        else:
+            if self.what_to_update is not None:
+                raise ValueError("Do not pass what_to_update if action is not "
+                                 "VALIDATE or UPDATE")
+            self.update_ID = None
 
         self.ebi_dir = self._get_ebi_dir()
 
@@ -172,14 +234,31 @@ class EBISubmission(object):
     def _get_study_alias(self):
         """Format alias using ``self.preprocessed_data_id``"""
         study_alias_format = '%s_ppdid_%s'
-        return study_alias_format % (
+        study_alias = study_alias_format % (
             qiita_config.ebi_organization_prefix,
             escape(clean_whitespace(str(self.preprocessed_data_id))))
 
+        # Do not add the suffix if the experiment is being updated, since
+        # this must refer to an existing study (not a uniquely named one)
+        if self.action in ('VALIDATE', 'UPDATE') \
+                and self.what_to_update != 'experiment':
+            study_alias += '_update_' + self.update_ID
+
+        return study_alias
+
+
     def _get_sample_alias(self, sample_name):
         """Format alias using ``self.preprocessed_data_id``, `sample_name`"""
-        return "%s:%s" % (self._get_study_alias(),
-                          escape(clean_whitespace(str(sample_name))))
+        sample_alias = "%s:%s" % (self._get_study_alias(),
+                                  escape(clean_whitespace(str(sample_name))))
+
+        # Do not add the suffix if the experiment is being updated, since
+        # this must refer to an existing sample (not a uniquely named one)
+        if self.action in ('VALIDATE', 'UPDATE') \
+                and self.what_to_update != 'experiment':
+            sample_alias += '_update_' + self.update_ID
+
+        return sample_alias
 
     def _get_experiment_alias(self, sample_name):
         """Format alias using ``self.preprocessed_data_id``, and `sample_name`
@@ -187,21 +266,43 @@ class EBISubmission(object):
         Currently, this is identical to _get_sample_alias above, since we are
         only going to allow submission of one prep for each sample
         """
-        return self._get_sample_alias(sample_name)
+        experiment_alias = "%s:%s" % (
+            self._get_study_alias(),
+            escape(clean_whitespace(str(experiment_name))))
+
+        # Do not add the suffix if the runs are being updated, since
+        # this must refer to an existing experiment (not a uniquely named one)
+        if self.action in ('VALIDATE', 'UPDATE') \
+                and self.what_to_update != 'run':
+            experiment_alias += '_update_' + self.update_ID
+
+        return experiment_alias
 
     def _get_submission_alias(self):
         """Format alias using ``self.preprocessed_data_id``"""
         safe_preprocessed_data_id = escape(
             clean_whitespace(str(self.preprocessed_data_id)))
         submission_alias_format = '%s_submission_%s'
-        return submission_alias_format % (qiita_config.ebi_organization_prefix,
-                                          safe_preprocessed_data_id)
+
+        submission_alias = submission_alias_format % (
+            qiita_config.ebi_organization_prefix,
+            safe_preprocessed_data_id)
+
+        if self.action in ('VALIDATE', 'UPDATE'):
+            submission_alias += '_update_' + self.update_ID
+
+        return submission_alias
 
     def _get_run_alias(self, file_base_name):
         """Format alias using `file_base_name`
         """
-        return '%s_%s_run' % (self._get_study_alias(),
-                              basename(file_base_name))
+        run_alias = '%s_%s_run' % (self._get_study_alias(),
+                                   basename(file_base_name))
+
+        if self.action in ('VALIDATE', 'UPDATE'):
+            run_alias += '_update_' + self.update_ID
+
+        return run_alias
 
     def _get_library_name(self, sample_name):
         """Format alias using `sample_name`
@@ -553,6 +654,14 @@ class EBISubmission(object):
             with open(file_path) as fp:
                 md5 = safe_md5(fp).hexdigest()
 
+            # Do not add empty files
+            if md5 in ('d41d8cd98f00b204e9800998ecf8427e',   # empty file
+                       '4a12329a258d79a941a3ac0a1e90afd3',   # empty gz
+                       'ca0921234f41f3aa00e99f99365ed336'):  # empty tgz
+                warn("%s (filepath %s) skipped; file is empty" %
+                     (sample_name, file_path), EmptyFileWarning, stacklevel=2)
+                continue
+
             run = ET.SubElement(run_set, 'RUN', {
                 'alias': self._get_run_alias(basename(file_path)),
                 'center_name': qiita_config.ebi_center_name}
@@ -572,13 +681,8 @@ class EBISubmission(object):
 
         return run_set
 
-    def generate_submission_xml(self, action):
+    def generate_submission_xml(self):
         """Generates the submission XML file
-
-        Parameters
-        ----------
-        action : {'ADD', 'VALIDATE', 'UPDATE'}
-            What action to take when communicating with EBI
 
         Returns
         -------
@@ -588,16 +692,26 @@ class EBISubmission(object):
         Raises
         ------
         NoXMLError
-            If one of the necessary XML files has not been generated
+            If action is ADD and one of the other XML files has not been
+            generated, or if action is VALIDATE or UPDATE and at least one
+            other XML file has not been generated.
         """
-        if any([self.study_xml_fp is None,
-                self.sample_xml_fp is None,
-                self.experiment_xml_fp is None,
-                self.run_xml_fp is None]):
-            raise NoXMLError("One of the necessary XML files has not been "
-                             "generated. Make sure you write out the other "
-                             "XML files before attempting to write the "
-                             "submission XML file.")
+        if self.action == 'ADD':
+            if any([self.study_xml_fp is None,
+                    self.sample_xml_fp is None,
+                    self.experiment_xml_fp is None,
+                    self.run_xml_fp is None]):
+                raise NoXMLError("One of the necessary XML files has not been "
+                                 "generated. Make sure you write out the "
+                                 "other XML files before attempting to write "
+                                 "the submission XML file.")
+        elif self.submission_type in ('UPDATE', 'VALIDATE'):
+            if all([self.study_xml_fp is None,
+                    self.sample_xml_fp is None,
+                    self.experiment_xml_fp is None,
+                    self.run_xml_fp is None]):
+                raise NoXMLError("There must be at least one XML file to "
+                                 "in order to update/validate!")
 
         submission_set = ET.Element('SUBMISSION_SET', {
             "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
@@ -610,30 +724,34 @@ class EBISubmission(object):
 
         actions = ET.SubElement(submission, 'ACTIONS')
 
-        study_action = ET.SubElement(actions, 'ACTION')
-        ET.SubElement(study_action, action, {
-            'schema': 'study',
-            'source': basename(self.study_xml_fp)}
-        )
+        if self.study_xml_fp is not None:
+            study_action = ET.SubElement(actions, 'ACTION')
+            ET.SubElement(study_action, self.action, {
+                'schema': 'study',
+                'source': basename(self.study_xml_fp)}
+            )
 
-        sample_action = ET.SubElement(actions, 'ACTION')
-        ET.SubElement(sample_action, action, {
-            'schema': 'sample',
-            'source': basename(self.sample_xml_fp)}
-        )
+        if self.sample_xml_fp is not None:
+            sample_action = ET.SubElement(actions, 'ACTION')
+            ET.SubElement(sample_action, self.action, {
+                'schema': 'sample',
+                'source': basename(self.sample_xml_fp)}
+            )
 
-        experiment_action = ET.SubElement(actions, 'ACTION')
-        ET.SubElement(experiment_action, action, {
-            'schema': 'experiment',
-            'source': basename(self.experiment_xml_fp)}
-        )
+        if self.experiment_xml_fp is not None:
+            experiment_action = ET.SubElement(actions, 'ACTION')
+            ET.SubElement(experiment_action, self.action, {
+                'schema': 'experiment',
+                'source': basename(self.experiment_xml_fp)}
+            )
 
-        run_action = ET.SubElement(actions, 'ACTION')
-        ET.SubElement(run_action, action, {
-            'schema': 'run', 'source': basename(self.run_xml_fp)}
-        )
+        if self.run_xml_fp is not None:
+            run_action = ET.SubElement(actions, 'ACTION')
+            ET.SubElement(run_action, self.action, {
+                'schema': 'run', 'source': basename(self.run_xml_fp)}
+            )
 
-        if action == 'ADD':
+        if self.action == 'ADD':
             hold_action = ET.SubElement(actions, 'ACTION')
             ET.SubElement(hold_action, 'HOLD', {
                 'HoldUntilDate': str(date.today() + timedelta(365))}
@@ -641,8 +759,7 @@ class EBISubmission(object):
 
         return submission_set
 
-    def _write_xml_file(self, xml_gen_fn, attribute_name, fp,
-                        xml_gen_fn_arg=None):
+    def _write_xml_file(self, xml_gen_fn, attribute_name, fp):
         """Writes an XML file after calling one of the XML generation
         functions
 
@@ -655,19 +772,8 @@ class EBISubmission(object):
             The name of the attribute in which to store the output filepath
         fp : str
             The filepath to which the XML will be written
-        xml_gen_fn_arg : str, optional
-            Defaults to None. If None, no arguments will be passed to
-            xml_gen_fn. Otherwise, this will be passed as the only argument to
-            xml_gen_fn
-
-        Notes
-        -----
-        xml_gen_fn_arg is needed for generating the submission XML
         """
-        if xml_gen_fn_arg is None:
-            xml_element = xml_gen_fn()
-        else:
-            xml_element = xml_gen_fn(xml_gen_fn_arg)
+        xml_element = xml_gen_fn()
 
         xml = minidom.parseString(ET.tostring(xml_element))
 
@@ -733,26 +839,24 @@ class EBISubmission(object):
         """
         self._write_xml_file(self.generate_run_xml, 'run_xml_fp', fp)
 
-    def write_submission_xml(self, fp, action):
+    def write_submission_xml(self, fp):
         """Write the submission XML file using the current data
 
         Parameters
         ----------
         fp : str
             The filepath to which the XML will be written
-        action : {'ADD', 'VALIDATE', 'UPDATE'}
-            What action to take when communicating with EBI
 
         Notes
         -----
         If `fp` points to an existing file, it will be overwritten
         """
         self._write_xml_file(self.generate_submission_xml, 'submission_xml_fp',
-                             fp, action)
+                             fp)
 
-    def write_all_xml_files(self, study_fp, sample_fp, experiment_fp, run_fp,
-                            submission_fp, action):
-        """Write all XML files needed for an EBI submission using current data
+    def write_xml_files(self, submission_fp, study_fp=None, sample_fp=None,
+                        experiment_fp=None, run_fp=None):
+        """Write XML files for an EBI submission/update using current data
 
         Parameters
         ----------
@@ -766,19 +870,37 @@ class EBISubmission(object):
             The filepath to which the run XML will be written
         submission_fp : str
             The filepath to which the submission XML will be written
-        action : {'ADD', 'VALIDATE', 'UPDATE'}
-            What action to take when communicating with EBI
 
         Notes
         -----
         If any of the filepaths point to an existing file, it will be
         overwritten
         """
-        self.write_study_xml(study_fp)
-        self.write_sample_xml(sample_fp)
-        self.write_experiment_xml(experiment_fp)
-        self.write_run_xml(run_fp)
-        self.write_submission_xml(submission_fp, action)
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'study'):
+            if study_fp is None:
+                raise ValueError("Must pass study_fp!")
+            self.write_study_xml(study_fp)
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'sample'):
+            if sample_fp is None:
+                raise ValueError("Must pass sample_fp!")
+            self.write_sample_xml(sample_fp)
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'experiment'):
+            if experiment_fp is None:
+                raise ValueError("Must pass experiment_fp!")
+            self.write_experiment_xml(experiment_fp)
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'run'):
+            if run_fp is None:
+                raise ValueError("Must pass run_fp!")
+            self.write_run_xml(run_fp)
+
+        self.write_submission_xml(submission_fp)
 
     def add_samples_from_templates(self, sample_template, prep_template,
                                    per_sample_fastq_dir):
@@ -888,36 +1010,61 @@ class EBISubmission(object):
         curl_command
             The curl string to be executed
 
+        Raises
+        ------
+        NoXMLError
+            If action is ADD and not all XML files have been generated
+
         Notes
         -----
         - All 5 XML files (study, sample, experiment, run, and submission) must
-          be generated before executing this function
+          be generated before executing this function if action is ADD
+        - A submission XML and at least one other XML file are required if
+          action is VALIDATE or UPDATE
         """
         # make sure that the XML files have been generated
-        if any([self.study_xml_fp is None,
-                self.sample_xml_fp is None,
-                self.experiment_xml_fp is None,
-                self.run_xml_fp is None,
-                self.submission_xml_fp is None]):
-            raise NoXMLError("One of the necessary XML files has not been "
-                             "generated. Make sure you write out all 5 of the "
-                             "XML files before attempting to generate the "
-                             "curl command.")
+        if self.action == 'ADD':
+            if any([self.study_xml_fp is None,
+                    self.sample_xml_fp is None,
+                    self.experiment_xml_fp is None,
+                    self.run_xml_fp is None,
+                    self.submission_xml_fp is None]):
+                raise NoXMLError("One of the necessary XML files has not been "
+                                 "generated. Make sure you write out all 5 of "
+                                 "the XML files before attempting to generate "
+                                 "the curl command.")
+        elif self.action in ('UPDATE', 'VALIDATE'):
+            if all([self.study_xml_fp is None,
+                    self.sample_xml_fp is None,
+                    self.experiment_xml_fp is None,
+                    self.run_xml_fp is None]) \
+                    or self.submission_xml_fp is None:
+                raise NoXMLError("A submission XML and at least one other XML "
+                                 "file are needed to validate/update.")
 
         url = '?auth=ERA%20{0}%20{1}%3D'.format(ebi_seq_xfer_user,
                                                 ebi_access_key)
-        curl_command = (
-            'curl {0}-F "SUBMISSION=@{1}" -F "STUDY=@{2}" -F "SAMPLE=@{3}" '
-            '-F "RUN=@{4}" -F "EXPERIMENT=@{5}" "{6}"'
-        ).format(
+        curl_command = 'curl %s-F "SUBMISSION=@%s"' % (
             '-k ' if ebi_skip_curl_cert else '',
-            self.submission_xml_fp,
-            self.study_xml_fp,
-            self.sample_xml_fp,
-            self.run_xml_fp,
-            self.experiment_xml_fp,
-            join(ebi_dropbox_url, url)
-        )
+            self.submission_xml_fp)
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'study'):
+            curl_command += ' -F "STUDY=@%s"' % self.study_xml_fp
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'sample'):
+            curl_command += ' -F "SAMPLE=@%s"' % self.sample_xml_fp
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'run'):
+            curl_command += ' -F "RUN=@%s"' % self.run_xml_fp
+
+        if self.action == 'ADD' or (self.action in ('UPDATE', 'VALIDATE') and \
+                self.what_to_update == 'experiment'):
+            curl_command += ' -F "EXPERIMENT=@%s"' % self.experiment_xml_fp
+
+        curl_command += '"%s"' % join(ebi_dropbox_url, url)
 
         return curl_command
 
