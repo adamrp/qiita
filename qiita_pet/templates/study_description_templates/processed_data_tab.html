@@ -1,33 +1,53 @@
 <div class="tab-pane" id="processed_data_tab" style="padding: 10px;">
-  <!-- Check if we have any preprocessed data -->
-  {% if available_processed_data %}
-    <ul class="nav nav-tabs" role="tablist" id="processed_data_nav_tabs">
-      <!-- Adding a processed data -->
-      <li class="active"><a href="#add_processed_data_tab" role="tab" data-toggle="tab">Add processed data</a></li>
-      <!-- Create the tabs for each processed data -->
-      {% for pd_id, pd, (class_icon1, class_icon2, color) in available_processed_data %}
-        <li>
-          <a href="#processed_data_info_{{pd_id}}" role="tab" data-toggle="tab">ID: {{pd_id}}&nbsp;
-            <div class="{{class_icon1}}" style="color: {{color}};"></div>
-            <div class="{{class_icon2}}" style="color: {{color}};"></div>
-            <button class="close" title="Remove this processed data" type="button" onclick="delete_processed_data({{pd_id}})">&nbsp; ×</button>
-          </a>
-        </li>
-      {% end %}
-    </ul>
-    <!-- Create the tab panes -->
-    <div class="tab-content">
-      <!-- Show the add processed data tab -->
-      <div class="tab-pane active" id="add_processed_data_tab" style="padding: 10px;">
-        <b>Not implemented! Coming soon...</b>
-      </div>
-      <!-- Create one tab pane for each processed data -->
-      {% for pd_id, pd, _ in available_processed_data %}
-        {% module ProcessedDataInfoTab(study_id, pd, allow_approval, approval_deny_msg) %}
-      {% end %}
+<ul class="nav nav-tabs" role="tablist" id="processed_data_nav_tabs">
+  <!-- Adding a processed data -->
+  <li class="active"><a href="#add_processed_data_tab" role="tab" data-toggle="tab">Add processed data</a></li>
+    <!-- Create the tabs for each processed data -->
+    {% for pd_id, pd, (class_icon1, class_icon2, color) in available_processed_data %}
+      <li>
+        <a href="#processed_data_info_{{pd_id}}" role="tab" data-toggle="tab">ID: {{pd_id}}&nbsp;
+          <div class="{{class_icon1}}" style="color: {{color}};"></div>
+          <div class="{{class_icon2}}" style="color: {{color}};"></div>
+          <button class="close" title="Remove this processed data" type="button" onclick="delete_processed_data({{pd_id}})">&nbsp; ×</button>
+        </a>
+      </li>
+    {% end %}
+  </ul>
+  <!-- Create the tab panes -->
+  <div class="tab-content">
+    <!-- Show the add processed data tab -->
+    <div class="tab-pane active" id="add_processed_data_tab" style="padding: 10px;">
+      This tab allows you to upload processed data directly. Because the
+      preprocessing and processing parameters that were used to generate this
+      data cannot be assured to be consistent with Qiita's processing
+      parameters, <b>data uploaded in this way cannot be made
+      public.</b>
+      <br/>
+      <br/>
+      If you do not see the file you want to add in the dropdown menu below,
+      make sure that you have uploaded the file using the upload button above,
+      and the file has a ".biom" extension.
+      <br/>
+      <select id="new_processed_data">
+        {% for f in files %}
+          <option value="{{f}}">{{f}}</option>
+        {% end %}
+      </select>
+      <br/>
+      <br/>
+      Select the type of data for this new processed data:<br/>
+      <select id="new_processed_data_type">
+        {% for dt in datatypes %}
+        <option value="{{dt}}">{{dt}}</option>
+        {% end %}
+      </select>
+      <br/>
+      <br/>
+      <a class="btn btn-primary" name="create_processed_data_btn" id="create_processed_data_btn" onclick="create_processed_data();">Add processed data</a>
     </div>
-  {% else %}
-    <!-- If there is no processed data we just show a message -->
-    There is no processed data available
-  {% end %}
+    <!-- Create one tab pane for each processed data -->
+    {% for pd_id, pd, _ in available_processed_data %}
+      {% module ProcessedDataInfoTab(study_id, pd, allow_approval, approval_deny_msg) %}
+    {% end %}
+  </div>
 </div>

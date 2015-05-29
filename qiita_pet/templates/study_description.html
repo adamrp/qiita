@@ -148,6 +148,30 @@ function create_raw_data() {
   }
 }
 
+function create_processed_data() {
+  if ($("#new_processed_data").val() === null) {
+    bootstrapAlert("You need to upload and select a biom file to add.");
+  } else {
+    var form = $("<form>")
+      .attr("action", window.location.href)
+      .attr("method", "post")
+      .append($("<input>")
+        .attr("type", "hidden")
+        .attr("name", "processed_data_file")
+        .attr("value", $("#new_processed_data").val()))
+      .append($("<input>")
+        .attr("type", "hidden")
+        .attr("name", "processed_data_type")
+        .attr("value", $("#new_processed_data_type").val()))
+      .append($("<input>")
+        .attr("type", "hidden")
+        .attr("name", "action")
+        .attr("value", "create_processed_data"));
+
+    form.submit();
+  }
+}
+
 function add_prep_template(raw_data_id) {
   var form = $("<form>")
     .attr("action", window.location.href)
@@ -548,13 +572,15 @@ function display_tab(top_tab, sub_tab, prep_tab){
 
 $(document).ready(function() {
   $("#previous_raw_data").chosen({width: "100%"});
+
   display_tab({% if top_tab %} "{{top_tab}}" {% end %}
               {% if sub_tab %}
                 , "{{sub_tab}}"
                 {% if prep_tab %}
                  , "{{prep_tab}}"
                 {% end %}
-              {% end %})
+              {% end %});
+
 });
 
 </script>

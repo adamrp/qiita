@@ -1347,10 +1347,12 @@ class ProcessedData(BaseData):
     def preprocessed_data(self):
         r"""The preprocessed data id used to generate the processed data"""
         conn_handler = SQLConnectionHandler()
-        return conn_handler.execute_fetchone(
+        ppd_id = conn_handler.execute_fetchone(
             "SELECT preprocessed_data_id FROM qiita.{0} WHERE "
             "processed_data_id=%s".format(self._preprocessed_processed_table),
-            [self._id])[0]
+            [self._id])
+
+        return None if not ppd_id else ppd_id[0]
 
     @property
     def study(self):

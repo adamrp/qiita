@@ -364,6 +364,60 @@ class StudyDescriptionHandler(BaseHandler):
 
         callback((msg, msg_level, 'raw_data_tab', rd_id, None))
 
+    def create_processed_data(self, study, user, callback):
+        """Adds a new processed data to the study
+
+        Parameters
+        ----------
+        study : Study
+            The current study object
+        user : User
+            The current user object
+        callback : function
+            The callback function to call with the results once the processing
+            is done
+        """
+        msg = "Processed data successfully added"
+        msg_level = "success"
+
+        # Get the arguments needed to create a raw data object
+        processed_data_file = self.get_argument('processed_data_file', None)
+        processed_data_type = self.get_argument('processed_data_type', None)
+
+        if processed_data_file is not None and processed_data_type is not None:
+            # Create a new processed data for this study
+            try:
+                # get the uploads directory
+                _, base_fp = get_mountpoint("uploads")[0]
+                # Get the path of the sample template in the uploads folder
+                fp = join(base_fp, str(study.id), processed_data_file)
+
+                if not exists(fp):
+                    # The file does not exist, fail nicely
+                    raise HTTPError(404, "This file doesn't exist: %s" % fp)
+
+                pd_id = ProcessedData.create('processed_params_unknown',
+                                             1, [(fp, 'biom')],
+                                             None, study, None,
+                                             processed_data_type).id
+            except (TypeError, QiitaDBColumnError, QiitaDBExecutionError,
+                    QiitaDBDuplicateError, IOError, ValueError, KeyError,
+                    CParserError) as e:
+                msg = html_error_message % (
+                    "creating a new processed data object for study:",
+                    str(study.id), str(e))
+                msg_level = "danger"
+                pd_id = None
+        else:
+            # The user did not select a processed data file
+            # If using the interface, we should never reach this, but better
+            # safe than sorry
+            msg = "You must select a processed data file and a data type."
+            msg_level = "danger"
+            pd_id = None
+
+        callback((msg, msg_level, 'processed_data_tab', pd_id, None))
+
     def add_prep_template(self, study, user, callback):
         """Adds a prep template to the system
 
@@ -851,6 +905,7 @@ class StudyDescriptionHandler(BaseHandler):
             update_sample_template=self.update_sample_template,
             extend_sample_template=self.add_to_sample_template,
             create_raw_data=self.create_raw_data,
+            create_processed_data=self.create_processed_data,
             add_prep_template=self.add_prep_template,
             make_public=self.make_public,
             approve_study=self.approve_study,

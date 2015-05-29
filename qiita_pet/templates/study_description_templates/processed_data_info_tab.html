@@ -1,7 +1,9 @@
 {% from qiita_pet.handlers.util import download_link_or_path %}
 
 <div class="tab-pane" id="processed_data_info_{{pd_id}}" style="padding: 10px;">
+  {% if preprocessed_data_id is not None %}
   <a href="#" onclick="display_tab('preprocessed_data_tab', {{preprocessed_data_id}});">Preprocessed data</a><br/>
+  {% end %}
   <b>Processed data:</b> {{process_date}}<br/>
   <b>Files:</b><br/>
   <table border="0" style="margin-left: 10px;">

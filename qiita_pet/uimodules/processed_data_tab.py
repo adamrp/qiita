@@ -8,6 +8,7 @@
 
 from qiita_core.qiita_settings import qiita_config
 from qiita_db.data import ProcessedData
+from qiita_db.util import get_files_from_uploads_folders, get_data_types
 from qiita_pet.util import STATUS_STYLER
 from .base_uimodule import BaseUIModule
 
@@ -18,12 +19,21 @@ class ProcessedDataTab(BaseUIModule):
         avail_pd = [(pd.id, pd, STATUS_STYLER[pd.status]) for pd in pd_gen
                     if full_access or pd.status == 'public']
 
+        # Retrieve the files from the uploads folder, so the user can choose
+        # the sample template of the study
+        files = [f for _, f in get_files_from_uploads_folders(str(study.id))
+                 if f.endswith('.biom')]
+
+        datatypes = get_data_types().keys()
+
         return self.render_string(
             "study_description_templates/processed_data_tab.html",
             available_processed_data=avail_pd,
             study_id=study.id,
             allow_approval=allow_approval,
-            approval_deny_msg=approval_deny_msg)
+            approval_deny_msg=approval_deny_msg,
+            files=files,
+            datatypes=datatypes)
 
 
 class ProcessedDataInfoTab(BaseUIModule):
